@@ -75,6 +75,20 @@ while True:
             2
         )
 
+        M = cv2.moments(robot_contour)
+
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+
+            cv2.circle(
+                frame,
+                (cx, cy),
+                5,
+                (255, 0, 0),
+                -1
+            )
+
     cv2.imshow("Foreground Mask", fg_mask)
     cv2.imshow("Cleaned Mask", cleaned)
     cv2.imshow("Detection", frame)
