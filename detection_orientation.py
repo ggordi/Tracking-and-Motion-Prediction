@@ -1,100 +1,374 @@
 import cv2
 import numpy as np
+import os
+import pandas as pd
 
-MOG2_subtractor = cv2.createBackgroundSubtractorMOG2(detectShadows = True)
-bg_subtractor=MOG2_subtractor
-camera = cv2.VideoCapture("resources/bug_clip1.mp4")
 
-kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+# --------------------------------------------------
+# Setup
+# --------------------------------------------------
 
-while True:
+resources = [f"bug_clip{i}" for i in range(1, 5)]
 
-    ret, frame = camera.read()
+# Only clips 1-4 are used for development.
+# Clips 5-6 remain held out for evaluation.
+video_times = {
+    f"{resource}.mp4": {
+        "start": 10,
+        "end": 80
+    }
+    for resource in resources
+}
 
-    if not ret:
-        break
+# Load the arena calibration data
+arena_bounds = pd.read_csv("recorded_data/arena_bounds.csv")
 
-    # 1. Background subtraction
-    fg_mask = bg_subtractor.apply(frame)
+# Store raw frame results for each video
+video_data = {
+    resource: []
+    for resource in resources
+}
 
-    # 2. Remove MOG2 shadow pixels
-    # MOG2 usually labels:
-    # 0   = background
-    # 127 = shadow
-    # 255 = foreground
-    _, threshold = cv2.threshold(
-        fg_mask,
-        200,
-        255,
-        cv2.THRESH_BINARY
+# Kernel used for morphological cleanup
+kernel = cv2.getStructuringElement(
+    cv2.MORPH_ELLIPSE,
+    (5, 5)
+)
+
+
+# --------------------------------------------------
+# Process each video
+# --------------------------------------------------
+
+for video_name, times in video_times.items():
+
+    start_time = times["start"]
+    end_time = times["end"]
+
+    resource = os.path.splitext(video_name)[0]
+
+    print(f"Processing {video_name}...")
+
+    # --------------------------------------------------
+    # Get calibration data for this video
+    # --------------------------------------------------
+
+    bounds = arena_bounds[
+        arena_bounds["video"] == video_name
+    ].iloc[0]
+
+    left_x = bounds["bottom_left_x"]
+    bottom_y = bounds["bottom_left_y"]
+    cm_per_pixel = bounds["cm_per_pixel"]
+
+    # --------------------------------------------------
+    # Open video
+    # --------------------------------------------------
+
+    camera = cv2.VideoCapture(
+        os.path.join("resources", video_name)
     )
 
-    # 3. Clean up small noisy regions
-    cleaned = cv2.morphologyEx(
-        threshold,
-        cv2.MORPH_OPEN,
-        kernel
+    # New background model for each video
+    bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+        detectShadows=True
     )
 
-    # 4. Fill small gaps inside the robot region
-    cleaned = cv2.morphologyEx(
-        cleaned,
-        cv2.MORPH_CLOSE,
-        kernel
+    # Jump to this video's start time
+    camera.set(
+        cv2.CAP_PROP_POS_MSEC,
+        start_time * 1000
     )
 
-    # 5. Find foreground contours
-    contours, _ = cv2.findContours(
-        cleaned,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
-    )
+    while True:
 
-    # 6. Remove tiny contours
-    valid_contours = [
-        contour
-        for contour in contours
-        if cv2.contourArea(contour) > 100
-    ]
+        ret, frame = camera.read()
 
-    # 7. Keep ONLY the largest valid contour
-    if valid_contours:
+        if not ret:
+            break
 
-        robot_contour = max(
-            valid_contours,
-            key=cv2.contourArea
+        current_time = (
+            camera.get(cv2.CAP_PROP_POS_MSEC) / 1000
         )
 
-        x, y, w, h = cv2.boundingRect(robot_contour)
+        if current_time >= end_time:
+            break
 
-        cv2.rectangle(
-            frame,
-            (x, y),
-            (x + w, y + h),
-            (255, 255, 0),
-            2
+        # Get actual frame number from original video
+        frame_number = int(
+            camera.get(cv2.CAP_PROP_POS_FRAMES)
+        ) - 1
+
+
+        # --------------------------------------------------
+        # Default frame values
+        # --------------------------------------------------
+        # Assume detection fails unless successfully found.
+
+        detected = 0
+        x_cm = np.nan
+        y_cm = np.nan
+        theta = np.nan
+
+
+        # --------------------------------------------------
+        # 1. Background subtraction
+        # --------------------------------------------------
+
+        fg_mask = bg_subtractor.apply(frame)
+
+
+        # --------------------------------------------------
+        # 2. Remove MOG2 shadow pixels
+        # --------------------------------------------------
+
+        _, threshold = cv2.threshold(
+            fg_mask,
+            200,
+            255,
+            cv2.THRESH_BINARY
         )
 
-        M = cv2.moments(robot_contour)
 
-        if M["m00"] != 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
+        # --------------------------------------------------
+        # 3. Remove small noise
+        # --------------------------------------------------
 
-            cv2.circle(
-                frame,
-                (cx, cy),
-                5,
-                (255, 0, 0),
-                -1
+        cleaned = cv2.morphologyEx(
+            threshold,
+            cv2.MORPH_OPEN,
+            kernel
+        )
+
+
+        # --------------------------------------------------
+        # 4. Fill small gaps
+        # --------------------------------------------------
+
+        cleaned = cv2.morphologyEx(
+            cleaned,
+            cv2.MORPH_CLOSE,
+            kernel
+        )
+
+
+        # --------------------------------------------------
+        # 5. Find foreground contours
+        # --------------------------------------------------
+
+        contours, _ = cv2.findContours(
+            cleaned,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+
+
+        # --------------------------------------------------
+        # 6. Remove tiny contours
+        # --------------------------------------------------
+
+        valid_contours = [
+            contour
+            for contour in contours
+            if cv2.contourArea(contour) > 100
+        ]
+
+
+        # --------------------------------------------------
+        # 7. Select robot
+        # --------------------------------------------------
+
+        if valid_contours:
+
+            # Assume largest valid foreground object
+            # is the robot.
+            robot_contour = max(
+                valid_contours,
+                key=cv2.contourArea
             )
 
-    cv2.imshow("Foreground Mask", fg_mask)
-    cv2.imshow("Cleaned Mask", cleaned)
-    cv2.imshow("Detection", frame)
+            # Bounding box
+            x, y, w, h = cv2.boundingRect(
+                robot_contour
+            )
 
-    if cv2.waitKey(30) & 0xFF == 27:
-        break
+            cv2.rectangle(
+                frame,
+                (x, y),
+                (x + w, y + h),
+                (255, 255, 0),
+                2
+            )
 
-camera.release()
+
+            # --------------------------------------------------
+            # 8. Estimate robot center
+            # --------------------------------------------------
+
+            M = cv2.moments(robot_contour)
+
+            if M["m00"] != 0:
+
+                cx = int(
+                    M["m10"] / M["m00"]
+                )
+
+                cy = int(
+                    M["m01"] / M["m00"]
+                )
+
+                # Draw center
+                cv2.circle(
+                    frame,
+                    (cx, cy),
+                    5,
+                    (255, 0, 0),
+                    -1
+                )
+
+
+                # --------------------------------------------------
+                # 9. Estimate orientation using PCA
+                # --------------------------------------------------
+
+                data_pts = (
+                    robot_contour
+                    .reshape(-1, 2)
+                    .astype(np.float32)
+                )
+
+                mean, eigenvectors = cv2.PCACompute(
+                    data_pts,
+                    mean=None
+                )
+
+                # First principal component gives
+                # dominant body-axis direction.
+                vx, vy = eigenvectors[0]
+
+                # Convert direction vector to angle.
+                # Modulo 180 because front/back are equivalent.
+                theta = (
+                    np.degrees(
+                        np.arctan2(vy, vx)
+                    ) % 180
+                )
+
+
+                # --------------------------------------------------
+                # 10. Draw estimated body axis
+                # --------------------------------------------------
+
+                line_length = 50
+
+                pt1 = (
+                    int(cx - vx * line_length),
+                    int(cy - vy * line_length)
+                )
+
+                pt2 = (
+                    int(cx + vx * line_length),
+                    int(cy + vy * line_length)
+                )
+
+                cv2.line(
+                    frame,
+                    pt1,
+                    pt2,
+                    (0, 255, 0),
+                    2
+                )
+
+
+                # --------------------------------------------------
+                # 11. Convert pixel center to centimeters
+                # --------------------------------------------------
+
+                # x increases from left -> right
+                x_cm = (
+                    cx - left_x
+                ) * cm_per_pixel
+
+                # OpenCV y increases downward,
+                # so reverse it to make arena y increase upward.
+                y_cm = (
+                    bottom_y - cy
+                ) * cm_per_pixel
+
+
+                # --------------------------------------------------
+                # 12. Detection succeeded
+                # --------------------------------------------------
+
+                detected = 1
+
+
+        # --------------------------------------------------
+        # 13. Record this frame
+        # --------------------------------------------------
+        # This happens for EVERY frame, regardless of whether
+        # detection succeeded.
+
+        video_data[resource].append({
+            "frame": frame_number,
+            "x_cm": x_cm,
+            "y_cm": y_cm,
+            "theta": theta,
+            "detected": detected
+        })
+
+
+        # --------------------------------------------------
+        # Display
+        # --------------------------------------------------
+
+        cv2.imshow(
+            "Foreground Mask",
+            fg_mask
+        )
+
+        cv2.imshow(
+            "Cleaned Mask",
+            cleaned
+        )
+
+        cv2.imshow(
+            "Detection",
+            frame
+        )
+
+        if cv2.waitKey(30) & 0xFF == 27:
+            break
+
+
+    camera.release()
+
+
 cv2.destroyAllWindows()
+
+
+# --------------------------------------------------
+# Export raw Task 1 data
+# --------------------------------------------------
+
+os.makedirs(
+    "recorded_data",
+    exist_ok=True
+)
+
+for resource, rows in video_data.items():
+
+    df = pd.DataFrame(rows)
+
+    output_path = (
+        f"recorded_data/{resource}_data_raw.csv"
+    )
+
+    df.to_csv(
+        output_path,
+        index=False
+    )
+
+    print(
+        f"Saved {len(df)} frames to {output_path}"
+    )
