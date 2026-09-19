@@ -20,7 +20,7 @@ video_times = {
     for resource in resources
 }
 
-# Load the arena calibration data
+# Load arena calibration data
 arena_bounds = pd.read_csv("recorded_data/arena_bounds.csv")
 
 # Store raw frame results for each video
@@ -28,6 +28,9 @@ video_data = {
     resource: []
     for resource in resources
 }
+
+# Make sure output directory exists
+os.makedirs("recorded_data", exist_ok=True)
 
 # Kernel used for morphological cleanup
 kernel = cv2.getStructuringElement(
@@ -61,6 +64,7 @@ for video_name, times in video_times.items():
     bottom_y = bounds["bottom_left_y"]
     cm_per_pixel = bounds["cm_per_pixel"]
 
+
     # --------------------------------------------------
     # Open video
     # --------------------------------------------------
@@ -69,16 +73,58 @@ for video_name, times in video_times.items():
         os.path.join("resources", video_name)
     )
 
+    # Get video properties for output video
+    fps = camera.get(cv2.CAP_PROP_FPS)
+
+    frame_width = int(
+        camera.get(cv2.CAP_PROP_FRAME_WIDTH)
+    )
+
+    frame_height = int(
+        camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    )
+
+
+    # --------------------------------------------------
+    # Create annotated video writer
+    # --------------------------------------------------
+
+    annotated_video_path = (
+        f"recorded_data/task1_outputs/{resource}_task1_annotated.mp4"
+    )
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+
+    video_writer = cv2.VideoWriter(
+        annotated_video_path,
+        fourcc,
+        fps,
+        (frame_width, frame_height)
+    )
+
+
+    # --------------------------------------------------
     # New background model for each video
+    # --------------------------------------------------
+
     bg_subtractor = cv2.createBackgroundSubtractorMOG2(
         detectShadows=True
     )
 
+
+    # --------------------------------------------------
     # Jump to this video's start time
+    # --------------------------------------------------
+
     camera.set(
         cv2.CAP_PROP_POS_MSEC,
         start_time * 1000
     )
+
+
+    # --------------------------------------------------
+    # Process frames
+    # --------------------------------------------------
 
     while True:
 
@@ -94,7 +140,7 @@ for video_name, times in video_times.items():
         if current_time >= end_time:
             break
 
-        # Get actual frame number from original video
+        # Actual frame number from original video
         frame_number = int(
             camera.get(cv2.CAP_PROP_POS_FRAMES)
         ) - 1
@@ -180,23 +226,22 @@ for video_name, times in video_times.items():
 
         if valid_contours:
 
-            # Assume largest valid foreground object
-            # is the robot.
+            # Assume largest valid foreground object is robot
             robot_contour = max(
                 valid_contours,
                 key=cv2.contourArea
             )
 
-            # Bounding box
-            x, y, w, h = cv2.boundingRect(
-                robot_contour
-            )
 
-            cv2.rectangle(
+            # --------------------------------------------------
+            # Draw robot contour / outline
+            # --------------------------------------------------
+
+            cv2.drawContours(
                 frame,
-                (x, y),
-                (x + w, y + h),
-                (255, 255, 0),
+                [robot_contour],
+                -1,
+                (0, 255, 255),
                 2
             )
 
@@ -216,6 +261,7 @@ for video_name, times in video_times.items():
                 cy = int(
                     M["m01"] / M["m00"]
                 )
+
 
                 # Draw center
                 cv2.circle(
@@ -245,6 +291,7 @@ for video_name, times in video_times.items():
                 # First principal component gives
                 # dominant body-axis direction.
                 vx, vy = eigenvectors[0]
+
 
                 # Convert direction vector to angle.
                 # Modulo 180 because front/back are equivalent.
@@ -284,13 +331,13 @@ for video_name, times in video_times.items():
                 # 11. Convert pixel center to centimeters
                 # --------------------------------------------------
 
-                # x increases from left -> right
+                # x increases left -> right
                 x_cm = (
                     cx - left_x
                 ) * cm_per_pixel
 
-                # OpenCV y increases downward,
-                # so reverse it to make arena y increase upward.
+                # OpenCV y increases downward.
+                # Reverse it so arena y increases upward.
                 y_cm = (
                     bottom_y - cy
                 ) * cm_per_pixel
@@ -306,8 +353,7 @@ for video_name, times in video_times.items():
         # --------------------------------------------------
         # 13. Record this frame
         # --------------------------------------------------
-        # This happens for EVERY frame, regardless of whether
-        # detection succeeded.
+        # Happens for every frame, including failed detections.
 
         video_data[resource].append({
             "frame": frame_number,
@@ -316,6 +362,13 @@ for video_name, times in video_times.items():
             "theta": theta,
             "detected": detected
         })
+
+
+        # --------------------------------------------------
+        # 14. Save annotated frame to output video
+        # --------------------------------------------------
+
+        video_writer.write(frame)
 
 
         # --------------------------------------------------
@@ -337,11 +390,21 @@ for video_name, times in video_times.items():
             frame
         )
 
+        # Press ESC to stop
         if cv2.waitKey(30) & 0xFF == 27:
             break
 
 
+    # --------------------------------------------------
+    # Finish this video
+    # --------------------------------------------------
+
     camera.release()
+    video_writer.release()
+
+    print(
+        f"Saved annotated video to {annotated_video_path}"
+    )
 
 
 cv2.destroyAllWindows()
@@ -350,11 +413,6 @@ cv2.destroyAllWindows()
 # --------------------------------------------------
 # Export raw Task 1 data
 # --------------------------------------------------
-
-os.makedirs(
-    "recorded_data",
-    exist_ok=True
-)
 
 for resource, rows in video_data.items():
 
