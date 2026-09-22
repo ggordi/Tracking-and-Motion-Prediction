@@ -215,7 +215,7 @@ def load_dataset(clips):
 
         path = os.path.join(
             DATA_DIR,
-            f"{clip}_data_interpolated.csv"
+            f"{clip}_data_causal.csv"
         )
 
         df = pd.read_csv(path)

@@ -57,23 +57,110 @@ print(
 # CHOOSE A REPRESENTATIVE EXAMPLE
 # ============================================================
 
-# Avoid deliberately choosing the absolute best or worst GRU example.
-# Instead, choose the example whose GRU error is closest to the
-# median GRU error.
+# Restrict examples to the middle 50% of GRU prediction errors
+# so that the visualization does not deliberately show either
+# an unusually good or unusually bad prediction.
 
-median_gru_error = results[
-    "gru_error_cm"
+q1 = results["gru_error_cm"].quantile(0.25)
+q3 = results["gru_error_cm"].quantile(0.75)
+
+candidates = results[
+    (results["gru_error_cm"] >= q1)
+    & (results["gru_error_cm"] <= q3)
+].copy()
+
+
+# Among those examples, prefer one with a moderate amount of
+# displacement over the observed 2-second history. We use
+# straight-line displacement rather than total path length so
+# isolated tracking jumps are not rewarded as strongly.
+
+history_frames = int(
+    round(HISTORY_SECONDS * FPS)
+)
+
+
+def observed_displacement(row):
+
+    clip = os.path.splitext(
+        row["video"]
+    )[0]
+
+    trajectory_path = os.path.join(
+        DATA_DIR,
+        f"{clip}_data_causal.csv"
+    )
+
+    trajectory = pd.read_csv(
+        trajectory_path
+    )
+
+    start_frame = int(
+        row["start_frame"]
+    )
+
+    matches = trajectory.index[
+        trajectory["frame"] == start_frame
+    ]
+
+    if len(matches) == 0:
+        return np.nan
+
+    current_idx = matches[0]
+
+    history_start_idx = max(
+        0,
+        current_idx - history_frames + 1
+    )
+
+    history = trajectory.iloc[
+        history_start_idx:
+        current_idx + 1
+    ]
+
+    if len(history) < 2:
+        return np.nan
+
+    dx = (
+        history.iloc[-1]["x_cm"]
+        - history.iloc[0]["x_cm"]
+    )
+
+    dy = (
+        history.iloc[-1]["y_cm"]
+        - history.iloc[0]["y_cm"]
+    )
+
+    return np.sqrt(
+        dx**2 + dy**2
+    )
+
+
+candidates["observed_displacement_cm"] = candidates.apply(
+    observed_displacement,
+    axis=1
+)
+
+# Remove invalid candidates.
+candidates = candidates.dropna(
+    subset=["observed_displacement_cm"]
+)
+
+# Prefer a trajectory with a moderate amount of movement:
+# closest to the median displacement among the representative
+# prediction examples.
+median_displacement = candidates[
+    "observed_displacement_cm"
 ].median()
 
 example_idx = (
-    results["gru_error_cm"]
-    - median_gru_error
+    candidates["observed_displacement_cm"]
+    - median_displacement
 ).abs().idxmin()
 
 example = results.loc[
     example_idx
 ]
-
 
 # ============================================================
 # GET EXAMPLE INFORMATION
@@ -147,7 +234,7 @@ print(
 
 trajectory_path = os.path.join(
     DATA_DIR,
-    f"{clip}_data_interpolated.csv"
+    f"{clip}_data_causal.csv"
 )
 
 trajectory = pd.read_csv(
