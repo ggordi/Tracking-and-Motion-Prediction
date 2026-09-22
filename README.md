@@ -1,154 +1,206 @@
 # Tracking-and-Motion-Prediction
 
-### Environment Setup
-1. python -m venv .venv
-2. source .venv/bin/activate
+## Environment
 
+We used a standard Python virtual environment via `python -m venv .venv` for organizing this project's dependencies. We used Python 3.10.12.
 
-### Tasks:
+To set up the environment:
 
-Task 1:
-- robot tracking
-- center estimation 
-- orientation as a line segment along the estimated body axis (180, head/end not important)
-- convert center coordinates to cm from pixels
-- store for each frame: 
-    frame
-    x_cm
-    y_cm
-    theta_deg
-    whether detection succeeded
-- Generate an annotated output video showing:
-    robot outline
-    center
-    estimated body-axis line
+1. In the root folder, create the virtual environment:
 
-Task 2:
+   `python -m venv .venv`
 
-- reconstruct the robot trajectory from the raw Task 1 detections
+2. Activate the virtual environment:
 
-- linearly interpolate missing x and y positions
+   `source .venv/bin/activate`
 
-- interpolate orientation while accounting for the 180 degree ambiguity of the body axis
+3. Install all necessary dependencies:
 
-- apply light smoothing to the reconstructed trajectory
+   `pip install -r requirements.txt`
 
-- preserve the original detection flag so interpolated frames can still be identified
 
-- generate annotated output videos showing the robot and its recent trajectory
+## Running the Code
 
-- evaluate the reconstructed trajectory using manually annotated reference frames
+Ensure that the virtual environment is activated before running any of the scripts below.
 
 
-Task 3:
+### Task 1 - Detection and Orientation
 
-- predict the robot's position 1 second into the future using the reconstructed trajectory from Task 2
+**The code for Task 1 is distributed among the following files:**
 
-- train a GRU-based motion prediction model
+- `pixel_calibration.py`: The user first clicks the bottom-left inner corner and then the bottom-right inner corner of the arena to determine the arena bounds used for the pixel-to-centimeter conversion. This calibration is performed separately for each video because the camera viewpoint varies between videos. The resulting calibration data is stored in `./recorded_data/arena_bounds.csv`.
 
-- use the previous 2 seconds (60 frames at 30 FPS) of trajectory data as input
+- `detection_orientation.py`: Performs the main Task 1 detection and orientation pipeline. It uses MOG2 background subtraction followed by thresholding and morphological cleanup to identify foreground objects. The largest valid contour is treated as the robot. The robot center is estimated using image moments, and its body-axis orientation is estimated using PCA. The center coordinates are converted from pixels to centimeters using the calibration data produced by `pixel_calibration.py`. For every processed frame, the script records the frame number, x and y position in centimeters, orientation, and whether detection succeeded. Raw trajectory data is saved to `./recorded_data/bug_clipX_data_raw.csv`. Annotated videos showing the detected robot outline, center, and body axis are saved under [`./recorded_data/task1_outputs/`](./recorded_data/task1_outputs/) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/tree/main/recorded_data/task1_outputs)).
 
-- GRU input features:
+- `manual_annotation.py`: Provides the manual ground-truth annotations used to evaluate the Task 1 position and orientation estimates.
 
-    relative x position
+- `task1_evaluation.py`: Compares the automatic Task 1 estimates against the manually annotated ground truth and computes the required detection, position, and orientation evaluation metrics.
 
-    relative y position
+**To run Task 1:**
 
-    x velocity
+1. Calibrate the arena coordinates:
 
-    y velocity
+   `python pixel_calibration.py`
 
-    sin(2 * theta)
+2. Run robot detection and orientation estimation:
 
-    cos(2 * theta)
+   `python detection_orientation.py`
 
-- predict the x and y displacement of the robot 1 second (30 frames) into the future
+3. Create the manual evaluation annotations:
 
-- use clips 1-3 for training
+   `python manual_annotation.py`
 
-- use clip 4 for validation
+4. Evaluate Task 1:
 
-- keep clips 5 and 6 completely held out for final evaluation
+   `python task1_evaluation.py`
 
-- save the model checkpoint with the lowest validation loss
 
-- manually annotate 40 future positions for evaluation:
+### Task 2 - Trajectory Reconstruction
 
-    20 evenly distributed start times from clip 5
+**The code for Task 2 is distributed among the following files:**
 
-    20 evenly distributed start times from clip 6
+- `trajectory_reconstruction.py`: Reads the raw trajectory CSV files produced by Task 1 and reconstructs a continuous robot trajectory. Missing x and y positions are filled using linear interpolation. Orientation is also interpolated while accounting for the 180-degree ambiguity of the robot body axis. A five-frame centered moving average is then applied to the reconstructed x and y coordinates for light smoothing. The original `detected` values are preserved so that directly detected and interpolated frames can still be distinguished. The reconstructed trajectories are saved as `./recorded_data/bug_clipX_data_interpolated.csv`.
 
-- compare the GRU against two baselines:
+- `task2_visualization.py`: Generates the Task 2 annotated videos. For each video frame, the script draws a trailing path representing the reconstructed center positions from the preceding few seconds. The output videos are saved under [`./recorded_data/task2_outputs/`](./recorded_data/task2_outputs/) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/tree/main/recorded_data/task2_outputs)).
 
-    stationary prediction
+- `task2_evaluation.py`: Evaluates the reconstructed trajectories and computes the required Task 2 statistics, including interpolation and trajectory accuracy metrics.
 
-    constant velocity prediction
+Task 2 depends on the raw trajectory files generated by Task 1.
 
-- evaluate all methods against the same manually annotated t + 1 second positions
+**To run Task 2:**
 
-- report mean, median, and 90th percentile Euclidean prediction error
+1. Reconstruct and interpolate the trajectories:
 
-- generate a box plot comparing prediction errors across all 40 evaluation points
+   `python trajectory_reconstruction.py`
 
-- generate an example visualization showing:
+2. Generate the annotated trajectory videos:
 
-    preceding observed trajectory
+   `python task2_visualization.py`
 
-    position at prediction time t
+3. Evaluate Task 2:
 
-    GRU prediction at t + 1 second
+   `python task2_evaluation.py`
 
-    stationary prediction
 
-    constant velocity prediction
+### Task 3 - Motion Prediction
 
-    manually annotated ground truth at t + 1 second
+Task 3 predicts the robot's position one second into the future. Our prediction method uses a GRU-based recurrent neural network and is compared against the required stationary and constant-velocity baselines.
 
+**The code for Task 3 is distributed among the following files:**
 
-### Notes:
+- `task3_train_gru.py`: Creates sliding trajectory sequences from the Task 2 outputs and trains the GRU motion-prediction model. Each training example uses the preceding two seconds (60 frames at 30 FPS) of trajectory data to predict the robot's displacement one second (30 frames) into the future. Clips 1-3 are used for training, clip 4 is used for validation, and clips 5-6 remain held out for final evaluation. The model checkpoint with the lowest validation loss is saved to `./recorded_data/task3_gru.pth`.
 
-`pixel_cailbration.py`: Since the camera viewpoint changed a little for each video, we needed to record the arena bounds and store the px to cm conversion factor specific to that video. This file displays the first frame of each video and has you click the bottom left and then bottom right inside corners of the arena. It then does the calculations needed to store the necessary data into `./recorded_data/arena_bounds.csv`
+- `task3_annotation.py`: Generates the manually annotated ground-truth endpoints used for Task 3 evaluation. The script selects 40 prediction start times distributed across held-out clips 5 and 6. For each start time, the frame one second into the future is displayed and the user manually selects the robot center. The annotations are saved to `./recorded_data/manual_task3_annotations.csv`.
 
-`detection_orientation.py`: This is the work done for retrieving the raw data needed for the first task. there is no interpolation being done at this point. 
+- `task3_evaluation.py`: Evaluates the trained GRU and the stationary and constant-velocity baselines using the same manually annotated evaluation points. Euclidean prediction error is calculated in centimeters, and the mean, median, and 90th-percentile errors are reported for each method. The script also saves the complete evaluation results and the prediction-error comparison plot under `./recorded_data/`.
 
-`trajectory_reconstruction.py`: This script performs linear interpolation and some light smoothing on the raw data collected in task 1 and saves the outputs to ./recorded_data
+- `task3_visualization.py`: Generates an example prediction figure. The figure displays the preceding observed trajectory, the robot position at prediction time, the GRU prediction, stationary prediction, constant-velocity prediction, and manually annotated ground-truth endpoint. The resulting figure is saved to `./recorded_data/task3_prediction_example.png`.
 
-`task2_visualization.py`: This script produces the annotated vieos with the trailing path of the preceding fewseconds using the interpolated data. saves outputs to ./recorded_data/task2_outputs
+Task 3 depends on the reconstructed trajectory data produced by Task 2.
 
-`task3_train_gru.py`: This script creates sliding trajectory sequences from the Task 2 outputs and trains the GRU motion prediction model. Clips 1-3 are used for training and clip 4 is used for validation. Each training example uses the previous 2 seconds of motion to predict the robot's displacement 1 second into the future. The checkpoint with the lowest validation loss is saved to `./recorded_data/task3_gru.pth`.
+**To run Task 3:**
 
-`task3_annotation.py`: This script generates evenly spaced evaluation start times across held-out clips 5 and 6. For each start time, it displays the video frame 1 second later and has you manually click the center of the robot. These manually annotated future positions are saved to `./recorded_data/manual_task3_annotations.csv` and are used as the ground truth for all Task 3 prediction methods.
+1. Train the GRU prediction model:
 
-`task3_evaluation.py`: This script evaluates the trained GRU, stationary baseline, and constant velocity baseline on the same 40 manually annotated evaluation points from clips 5 and 6. It computes the Euclidean prediction error in cm and reports the mean, median, and 90th percentile for each method. It also saves the full evaluation results and a box plot of the prediction errors to `./recorded_data`.
+   `python task3_train_gru.py`
 
-`task3_visualization.py`: This script selects a representative Task 3 evaluation example with GRU error closest to the median GRU error. It plots the preceding 2 seconds of observed motion, the position at time t, the GRU prediction, both baseline predictions, and the manually annotated ground-truth position 1 second later. The figure is saved to `./recorded_data/task3_prediction_example.png`.
+2. Create the manual future-position annotations:
 
-### Task 3 Results:
+   `python task3_annotation.py`
 
-Evaluation was performed on 40 manually annotated prediction points across held-out clips 5 and 6.
+3. Evaluate the GRU and both required baselines:
 
-Stationary baseline:
+   `python task3_evaluation.py`
 
-- Mean error: 5.115 cm
+4. Generate the example prediction visualization:
 
-- Median error: 4.088 cm
+   `python task3_visualization.py`
 
-- 90th percentile error: 10.328 cm
 
+## Dataset
 
-Constant velocity baseline:
+The dataset consists of six video clips recorded at **30 FPS**.
 
-- Mean error: 12.455 cm
+The original video clips are available in [`resources/`](./resources/) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/tree/main/resources)).
 
-- Median error: 11.721 cm
+### Data Split
 
-- 90th percentile error: 20.436 cm
+The clips were divided as follows:
 
+- `bug_clip1.mp4` - Training/development
+- `bug_clip2.mp4` - Training/development
+- `bug_clip3.mp4` - Training/development
+- `bug_clip4.mp4` - Validation/development
+- `bug_clip5.mp4` - Held-out evaluation
+- `bug_clip6.mp4` - Held-out evaluation
 
-GRU:
+For the Task 3 GRU model specifically, clips 1-3 were used for training, clip 4 was used for validation, and clips 5-6 were used only for final evaluation.
 
-- Mean error: 3.646 cm
 
-- Median error: 2.195 cm
+## Outputs
 
-- 90th percentile error: 7.723 cm
+Generated data and evaluation outputs are stored in [`recorded_data/`](./recorded_data/) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/tree/main/recorded_data)).
+
+
+### Task 1
+
+**Raw per-frame trajectory data:**
+
+`recorded_data/bug_clipX_data_raw.csv`
+
+**Annotated detection/orientation videos:**
+
+- [`recorded_data/task1_outputs/bug_clip1_task1_annotated.mp4`](./recorded_data/task1_outputs/bug_clip1_task1_annotated.mp4) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task1_outputs/bug_clip1_task1_annotated.mp4))
+- [`recorded_data/task1_outputs/bug_clip2_task1_annotated.mp4`](./recorded_data/task1_outputs/bug_clip2_task1_annotated.mp4) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task1_outputs/bug_clip2_task1_annotated.mp4))
+- [`recorded_data/task1_outputs/bug_clip3_task1_annotated.mp4`](./recorded_data/task1_outputs/bug_clip3_task1_annotated.mp4) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task1_outputs/bug_clip3_task1_annotated.mp4))
+- [`recorded_data/task1_outputs/bug_clip4_task1_annotated.mp4`](./recorded_data/task1_outputs/bug_clip4_task1_annotated.mp4) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task1_outputs/bug_clip4_task1_annotated.mp4))
+- [`recorded_data/task1_outputs/bug_clip5_task1_annotated.mp4`](./recorded_data/task1_outputs/bug_clip5_task1_annotated.mp4) - Held-out evaluation ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task1_outputs/bug_clip5_task1_annotated.mp4))
+- [`recorded_data/task1_outputs/bug_clip6_task1_annotated.mp4`](./recorded_data/task1_outputs/bug_clip6_task1_annotated.mp4) - Held-out evaluation ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task1_outputs/bug_clip6_task1_annotated.mp4))
+
+
+### Task 2
+
+**Reconstructed trajectory CSVs:**
+
+`recorded_data/bug_clipX_data_interpolated.csv`
+
+**Annotated trajectory videos:**
+
+- [`recorded_data/task2_outputs/bug_clip1_task2_trajectory.mp4`](./recorded_data/task2_outputs/bug_clip1_task2_trajectory.mp4) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task2_outputs/bug_clip1_task2_trajectory.mp4))
+- [`recorded_data/task2_outputs/bug_clip2_task2_trajectory.mp4`](./recorded_data/task2_outputs/bug_clip2_task2_trajectory.mp4) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task2_outputs/bug_clip2_task2_trajectory.mp4))
+- [`recorded_data/task2_outputs/bug_clip3_task2_trajectory.mp4`](./recorded_data/task2_outputs/bug_clip3_task2_trajectory.mp4) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task2_outputs/bug_clip3_task2_trajectory.mp4))
+- [`recorded_data/task2_outputs/bug_clip4_task2_trajectory.mp4`](./recorded_data/task2_outputs/bug_clip4_task2_trajectory.mp4) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task2_outputs/bug_clip4_task2_trajectory.mp4))
+- [`recorded_data/task2_outputs/bug_clip5_task2_trajectory.mp4`](./recorded_data/task2_outputs/bug_clip5_task2_trajectory.mp4) - Held-out evaluation ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task2_outputs/bug_clip5_task2_trajectory.mp4))
+- [`recorded_data/task2_outputs/bug_clip6_task2_trajectory.mp4`](./recorded_data/task2_outputs/bug_clip6_task2_trajectory.mp4) - Held-out evaluation ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task2_outputs/bug_clip6_task2_trajectory.mp4))
+
+The final trajectory CSVs contain the following columns:
+
+`frame, x_cm, y_cm, theta, detected`
+
+The `detected` field is `1` when the robot was directly detected in that frame and `0` when the corresponding trajectory value was filled during reconstruction.
+
+
+### Task 3
+
+Task 3 outputs, including the complete prediction evaluation results, prediction-error plot, and example prediction figure, are stored under [`recorded_data/`](./recorded_data/) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/tree/main/recorded_data)).
+
+**Example prediction figure:**
+
+- [`recorded_data/task3_prediction_example.png`](./recorded_data/task3_prediction_example.png) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/blob/main/recorded_data/task3_prediction_example.png))
+
+
+## Manual Annotations
+
+Manual reference annotations used for evaluation are stored under [`recorded_data/`](./recorded_data/) ([GitHub](https://github.com/ggordi/Tracking-and-Motion-Prediction/tree/main/recorded_data)).
+
+These include:
+
+- Moving-frame center and body-axis annotations used to evaluate Tasks 1 and 2, including the corresponding frame indices/timestamps.
+- Manually annotated future robot positions used as the reference endpoints for Task 3 prediction evaluation.
+
+
+## AI Tool Usage
+
+AI tools were used as a technical aid during development, including for code debugging, targeted code implementation, and documentation generation.
+
+All major conceptual work, including algorithmic decisions, experimental design, evaluation, testing, and interpretation of results, was performed by the project team.
